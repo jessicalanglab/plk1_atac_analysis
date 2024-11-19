@@ -1,0 +1,381 @@
+---
+title: "Determining cutoffs for homer analysis"
+output: html_notebook
+---
+
+## Introduction  
+
+Goal: Identify a good cutoff for the significant peaks to include in the homer analysis.
+
+Atac-seq was run for 4 biological replicates and 2 technical replicates across the 3MB and DMSO cell lines. 
+
+Sample preparation and Atac-seq was performed by Kristin in the Lang lab.
+Analysis is performed by Ryan in the Lang lab.
+
+## Inputs
+
+Inputs consisted of:  
+
+ * Data preparation from and inputs from `homer-analysis.Rmd`
+ 
+
+```{r load packages, include=FALSE}
+library(tidyverse)
+library(stringr)
+library(ggrepel)
+library(ggplot2)
+library(scales)
+library(MatrixGenerics)
+```
+
+## Examine raw peaks data
+
+We examined the raw peaks data to visualize where meaningful cutoffs might be placed
+
+### Consensus Peaks
+
+Q values
+```{r peak q value consensus}
+print(str_interp("Number of intervals with -log10qval > 5: ${nrow(subset(peaks.consensus.boolean, max_qvalue > 5))}"))
+print(str_interp("Number of intervals with -log10qval > 4: ${nrow(subset(peaks.consensus.boolean, max_qvalue > 4))}"))
+print(str_interp("Number of intervals with -log10qval > 3: ${nrow(subset(peaks.consensus.boolean, max_qvalue > 3))}"))
+print(str_interp("Number of intervals with -log10qval > 2: ${nrow(subset(peaks.consensus.boolean, max_qvalue > 2))}"))
+
+scatter_plot <- cbind(x = 1:nrow(peaks.consensus.boolean), 
+                      y = peaks.consensus.boolean$max_qvalue[order(peaks.consensus.boolean$max_qvalue, decreasing = TRUE)])
+
+as.data.frame(scatter_plot) %>%
+  ggplot(aes(x=x, y=y)) + geom_point() +
+  ggtitle("-log10(padj) of differential peaks (down in 3MB)") +
+  labs(y = "-log10(padj)", x = "Peak significance rank") +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
+```
+
+### Differential peaks down in 3MB
+
+```{r examine raw peaks data differential}
+print(str_interp("Differential peaks (down in 3MB) have padj values ranging from ${
+                    min(down.in.3MB.peaks$padj, na.rm = TRUE)
+                  } to ${
+                    max(down.in.3MB.peaks$padj, na.rm = TRUE)
+                  }"))
+print(str_interp("${
+                    nrow(filter(down.in.3MB.peaks, log2FoldChange > 1))
+                 } peaks with fold_enrichment > 2 out of ${
+                    nrow(down.in.3MB.peaks)
+                 } total peaks"))
+```
+
+Q value scatterplot
+
+```{r peak q value differential}
+scatter_plot <- cbind(x = 1:nrow(down.in.3MB.peaks), 
+                      y = -log(down.in.3MB.peaks$padj[order(down.in.3MB.peaks$padj, decreasing = FALSE)]))
+
+as.data.frame(scatter_plot) %>%
+  ggplot(aes(x=x, y=y)) + geom_point() +
+  ggtitle("-log10(padj) of differential peaks (down in 3MB)") +
+  labs(y = "-log10(padj)", x = "Peak significance rank") +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
+
+scatter_plot <- cbind(x = 1:nrow(down.in.3MB.peaks), 
+                      y = down.in.3MB.peaks$padj[order(down.in.3MB.peaks$padj, decreasing = FALSE)])
+
+as.data.frame(scatter_plot) %>%
+  ggplot(aes(x=x, y=y)) + geom_point() +
+  ggtitle("padj of differential peaks (down in 3MB)") +
+  labs(y = "padj", x = "Peak significance rank") +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
+```
+
+### Differential peaks up in 3MB/down in DMSO
+
+```{r examine raw peaks data differential 3MB}
+print(str_interp("Differential peaks (up in 3MB) have padj values ranging from ${
+                    min(up.in.3MB.peaks$padj)
+                  } to ${
+                    max(up.in.3MB.peaks$padj)
+                  }"))
+print(str_interp("${
+                    nrow(filter(up.in.3MB.peaks, log2FoldChange < -1))
+                 } peaks with fold_enrichment > 2 out of ${
+                    nrow(up.in.3MB.peaks)
+                 } total peaks"))
+```
+
+Enrichment scatterplot
+
+```{r peak enrichment differential 3MB}
+scatter_plot <- cbind(x = 1:nrow(up.in.3MB.peaks), 
+                      y = 2 ^ (1 / up.in.3MB.peaks$log2FoldChange[order(up.in.3MB.peaks$log2FoldChange, decreasing = FALSE)]))
+
+as.data.frame(scatter_plot) %>%
+  ggplot(aes(x=x, y=y)) + geom_point() +
+  ggtitle("Fold enrichment of differential peaks (up in 3MB)") +
+  labs(y = "Fold enrichment", x = "Peak enrichment rank") +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
+```
+
+Q value scatterplot
+
+```{r peak q value differential 3MB}
+scatter_plot <- cbind(x = 1:nrow(up.in.3MB.peaks), 
+                      y = -log(up.in.3MB.peaks$padj[order(up.in.3MB.peaks$padj, decreasing = FALSE)]))
+
+as.data.frame(scatter_plot) %>%
+  ggplot(aes(x=x, y=y)) + geom_point() +
+  ggtitle("-log10(padj) of differential peaks (up in 3MB)") +
+  labs(y = "-log10(padj)", x = "Peak significance rank") +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
+
+scatter_plot <- cbind(x = 1:nrow(up.in.3MB.peaks), 
+                      y = up.in.3MB.peaks$padj[order(up.in.3MB.peaks$padj, decreasing = FALSE)])
+
+as.data.frame(scatter_plot) %>%
+  ggplot(aes(x=x, y=y)) + geom_point() +
+  ggtitle("padj of differential peaks (up in 3MB)") +
+  labs(y = "padj", x = "Peak significance rank") +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
+```
+
+### 3MB Peaks
+
+```{r examine raw peaks data}
+print(str_interp("3MB peaks have q values ranging from ${
+                    -10 ^ min(peaks.threeMB.all$X.log10.qvalue.)
+                  } to -10^${
+                    max(peaks.threeMB.all$X.log10.qvalue.)
+                  }"))
+print(str_interp("${
+                    nrow(filter(peaks.threeMB.all, fold_enrichment > 2))
+                 } peaks with fold_enrichment > 2 out of ${
+                    nrow(peaks.threeMB.all)
+                 } total peaks"))
+```
+
+Enrichment scatterplot
+
+```{r peak enrichment}
+scatter_plot <- cbind(x = 1:nrow(peaks.threeMB.all), 
+                      y = peaks.threeMB.all$fold_enrichment[order(peaks.threeMB.all$fold_enrichment, decreasing = TRUE)])
+
+as.data.frame(scatter_plot) %>%
+  ggplot(aes(x=x, y=y)) + geom_point() +
+  ggtitle("Fold enrichment of 3MB Peaks") +
+  labs(y = "Fold enrichment", x = "Peak enrichment rank") +
+  scale_x_continuous(breaks = seq(0, 50000, by = 50000), limits = c(0, 15000)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
+
+as.data.frame(scatter_plot) %>%
+  ggplot(aes(x=x, y=y)) + geom_point() +
+  ggtitle("Fold enrichment of 3MB Peaks") +
+  labs(y = "Fold enrichment", x = "Peak enrichment rank") +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
+```
+
+Q value scatterplot
+
+```{r peak q value}
+scatter_plot <- cbind(x = 1:nrow(peaks.threeMB.all), 
+                      y = peaks.threeMB.all$X.log10.qvalue.[order(peaks.threeMB.all$X.log10.qvalue, decreasing = TRUE)])
+
+as.data.frame(scatter_plot) %>%
+  ggplot(aes(x=x, y=y)) + geom_point() +
+  ggtitle("-log10 q value of 3MB Peaks") +
+  labs(y = "-log10(q value)", x = "Peak significance rank") +
+  scale_x_continuous(breaks = seq(0, 1000, by = 50), limits = c(0, 1000)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
+
+as.data.frame(scatter_plot) %>%
+  ggplot(aes(x=x, y=y)) + geom_point() +
+  ggtitle("-log10 q value of 3MB Peaks") +
+  labs(y = "-log10(q value)", x = "Peak significance rank") +
+  scale_x_continuous(breaks = seq(0, 50000, by = 5000), limits = c(0, 15000)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
+
+as.data.frame(scatter_plot) %>%
+  ggplot(aes(x=x, y=y)) + geom_point() +
+  ggtitle("-log10 q value of 3MB Peaks") +
+  labs(y = "-log10(q value)", x = "Peak significance rank") +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
+```
+### DMSO
+
+Enrichment scatterplot
+
+```{r peak enrichment dmso}
+scatter_plot <- cbind(x = 1:nrow(peaks.dmso.all), 
+                      y = peaks.dmso.all$fold_enrichment[order(peaks.dmso.all$fold_enrichment, decreasing = TRUE)])
+
+as.data.frame(scatter_plot) %>%
+  ggplot(aes(x=x, y=y)) + geom_point() +
+  ggtitle("Fold enrichment of DMSO Peaks") +
+  labs(y = "Fold enrichment", x = "Peak enrichment rank") +
+  scale_x_continuous(breaks = seq(0, 50000, by = 5000), limits = c(0, 15000)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
+
+as.data.frame(scatter_plot) %>%
+  ggplot(aes(x=x, y=y)) + geom_point() +
+  ggtitle("Fold enrichment of DMSO Peaks") +
+  labs(y = "Fold enrichment", x = "Peak enrichment rank") +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
+```
+
+Q value scatterplot
+
+```{r examine raw peaks data dmso}
+print(str_interp("DMSO peaks have q values ranging from ${
+                    -10 ^ min(peaks.dmso.all$X.log10.qvalue.)
+                  } to -10^${
+                    max(peaks.dmso.all$X.log10.qvalue.)
+                  }"))
+print(str_interp("${
+                    nrow(filter(peaks.dmso.all, fold_enrichment > 2))
+                 } peaks with fold_enrichment > 2 out of ${
+                    nrow(peaks.dmso.all)
+                 } total peaks"))
+```
+
+```{r peak q value dmso}
+scatter_plot <- cbind(x = 1:nrow(peaks.dmso.all), 
+                      y = peaks.dmso.all$X.log10.qvalue.[order(peaks.dmso.all$X.log10.qvalue, decreasing = TRUE)])
+
+as.data.frame(scatter_plot) %>%
+  ggplot(aes(x=x, y=y)) + geom_point() +
+  ggtitle("-log10 q value of DMSO Peaks") +
+  labs(y = "-log10(q value)", x = "Peak significance rank") +
+  scale_x_continuous(breaks = seq(0, 1000, by = 50), limits = c(0, 1000)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
+
+as.data.frame(scatter_plot) %>%
+  ggplot(aes(x=x, y=y)) + geom_point() +
+  ggtitle("-log10 q value of DMSO Peaks") +
+  labs(y = "-log10(q value)", x = "Peak significance rank") +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
+```
+
+## Subset peaks - trying different values
+
+Only keep those with fold enrichment > 2. (Only looking at 3MB and DMSO peaks separately)
+
+```{r }
+# Subset only peaks with fold enrichment > 2
+write.table(filter(peaks.threeMB.all, fold_enrichment > 2),
+            "Determining-cutoffs-output/3MB.mRp.clN_peaks_enrichment_doubled.bed",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = FALSE,
+            sep = "\t")
+
+write.table(filter(peaks.dmso.all, fold_enrichment > 2),
+            "Determining-cutoffs-output/DMSO.mRp.clN_peaks_enrichment_doubled.bed",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = FALSE,
+            sep = "\t")
+```
+
+Tests on a variety of cutoffs by number of peaks. 
+
+```{r subset peaks}
+# Trying different cutoffs for the differential peaks. There are not enough DMSO down differential peaks to vary the number of peaks
+for (i in 1:11) {
+  num_peaks = 1000 * i
+  write.table(head(down.in.3MB.peaks.sig[order(down.in.3MB.peaks.sig$log2FoldChange, decreasing = TRUE),], num_peaks)[,1:4],
+            str_interp("Determining-cutoffs-output/differential_peaks_down_in_3MB_top${num_peaks}.bed"),
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = FALSE,
+            sep = "\t")
+}
+
+#
+for (i in list(4500, 5000, 5500, 6000, 6500, 7000, 7500)) {
+  num_peaks <- i
+  
+  write.table(head(peaks.threeMB.all[order(peaks.threeMB.all$fold_enrichment, decreasing = TRUE),], num_peaks),
+              str_interp("Determining-cutoffs-output/3MB.mRp.ClN_peaks_top${num_peaks}.bed"),
+              quote = FALSE,
+              row.names = FALSE,
+              col.names = FALSE,
+              sep = "\t")
+
+  write.table(head(peaks.dmso.all[order(peaks.dmso.all$fold_enrichment, decreasing = TRUE),], num_peaks),
+              str_interp("Determining-cutoffs-output/DMSO.mRp.ClN_peaks_top${num_peaks}.bed"),
+              quote = FALSE,
+              row.names = FALSE,
+              col.names = FALSE,
+              sep = "\t")
+}
+for (i in 1:5) {
+  # Select the i/5 peaks with highest fold enrichment
+  num_peaks <- round(i * nrow(peaks.threeMB.all) / 5)
+
+  write.table(head(peaks.threeMB.all[order(peaks.threeMB.all$fold_enrichment, decreasing = TRUE),], num_peaks),
+              str_interp("Determining-cutoffs-output/3MB.mRp.ClN_peaks_top${num_peaks}.bed"),
+              quote = FALSE,
+              row.names = FALSE,
+              col.names = FALSE,
+              sep = "\t")
+
+  num_peaks <- round(i * nrow(peaks.dmso.all) / 5)
+  write.table(head(peaks.dmso.all[order(peaks.dmso.all$fold_enrichment, decreasing = TRUE),], num_peaks),
+              str_interp("Determining-cutoffs-output/DMSO.mRp.ClN_peaks_top${num_peaks}.bed"),
+              quote = FALSE,
+              row.names = FALSE,
+              col.names = FALSE,
+              sep = "\t")
+}
+
+for (i in 1:5) {
+  # Select the i/25 peaks with highest fold enrichment (for the first 1/5 of possible values)
+  num_peaks <- round(i * nrow(peaks.threeMB.all) / 25)
+
+  write.table(head(peaks.threeMB.all[order(peaks.threeMB.all$fold_enrichment, decreasing = TRUE),], num_peaks),
+              str_interp("Determining-cutoffs-output/3MB.mRp.ClN_peaks_top${num_peaks}.bed"),
+              quote = FALSE,
+              row.names = FALSE,
+              col.names = FALSE,
+              sep = "\t")
+
+  num_peaks <- round(i * nrow(peaks.dmso.all) / 25)
+  write.table(head(peaks.dmso.all[order(peaks.dmso.all$fold_enrichment, decreasing = TRUE),], num_peaks),
+              str_interp("Determining-cutoffs-output/DMSO.mRp.ClN_peaks_top${num_peaks}.bed"),
+              quote = FALSE,
+              row.names = FALSE,
+              col.names = FALSE,
+              sep = "\t")
+}
+```
+
+## Running Homer
+
+This section is done in the terminal, not in R
+
+ * Add Homer to path (TODO: figure out why adding it to the bashrc isn't working)
+`export PATH="/project/LangATAC/homer/.//bin/:$PATH"`
+
+ * Run Homer (Can run a bunch of these in parallel on SLURM -- see bash files in `Homer/`)
+`findMotifsGenome.pl /path/to/bed_file.bed output_folder_name/ -size 200 -mask`
+
+ * View the output of Homer, specifically the known motifs, file found at: `homer-output-folder/knownResults.html`
+ 
+## Results
+ 
+Looking at the homer analysis output using the `.bed` files created below as the input to homer, it appears that in the DMSO and 3MB individual peaks, the known motifs follow a similar pattern up through ~4000 peaks and then by ~8000 are dominated by background noise. 
+
+There are only 59 significant differential peaks that are up in 3MB, so we have no reason to try varying the number of peaks.
+
+There are only ~12,000 significant differential peaks that are down in 3MB. The motif patterns stay consistent throughout a variety of number of peaks.
+
+

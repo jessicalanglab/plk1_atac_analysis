@@ -1,0 +1,409 @@
+---
+title: "Secondary analysis of atac-seq data (part 2)"
+output: html_notebook
+---
+
+## Introduction  
+
+This is in addition to the `homer-analysis.Rmd` file. See that file for further context.
+
+## Inputs
+
+In addition to the inputs and outputs of `homer-analysis.Rmd`, inputs consisted of:  
+  * bedtools installation (https://bedtools.readthedocs.io/en/latest/content/installation.html)
+  <!-- * Bam files in input folder -->
+  * hg38 denylist and chromosome size files. Run the following lines in terminal to download.
+  
+```{sh}
+# Get denylist file
+wget -L https://raw.githubusercontent.com/Boyle-Lab/Blacklist/master/lists/hg38-blacklist.v2.bed.gz && gunzip hg38-blacklist.v2.bed.gz
+mv hg38-blacklist.v2.bed background-peaks/hg38-denylist.v2.bed
+
+# Get the human chromosome size file
+wget --timestamping ftp://hgdownload.cse.ucsc.edu/goldenPath/hg38/bigZips/hg38.chrom.sizes -O background-peaks/hg38.chrom.sizes
+gunzip background-peaks/hg38.chrom.sizes
+hg38.chrom.sizes
+```
+
+```{r load packages, include=FALSE}
+library(tidyverse)
+library(stringr)
+library(ggrepel)
+library(ggplot2)
+library(DESeqAnalysis)
+# library(bedr)
+library(Rsubread)
+library(reshape2)
+library(wesanderson)
+library(hexbin)
+```
+
+## Volcano Plots of deseq results
+
+This is a volcano plot of the deseq results prior to filtering the results to consider only those peaks with at least one of the individual peaks contributing to a given consensus peak having a -log10qval > 4.
+
+```{r volcano plot before filtering}
+res.unfiltered %>%
+  # -log2FoldChange because the results were compared backwards from the intuitive direction
+  ggplot(aes(x = -log2FoldChange, y = -log10(padj), label = rownames(as.data.frame(res.unfiltered)))) +
+  geom_hex(bins = 75, aes(fill = stat(log(count)))) +
+  theme_minimal() +
+  scale_color_manual(values = c("black", "blue", "red")) +
+  geom_text_repel() +
+  geom_hline(yintercept = 1.301) +
+  geom_vline(xintercept = 1.2) +
+  geom_vline(xintercept = -1.2) +
+  xlim(-3, 3)
+```
+
+This is a volcano plot of the deseq results after filtering the results such that the consensus peaks considered are only those with at least one of the individual peaks contributing to a given consensus peak having a -log10qval > 4.
+
+```{r volcano plot}
+as.data.frame(res) %>%
+  # -log2FoldChange because the results were compared backwards from the intuitive direction
+  ggplot(aes(x = -log2FoldChange, y = -log10(padj), label = rownames(as.data.frame(res)))) +
+  geom_hex(bins = 75, aes(fill = stat(log(count)))) +
+  theme_minimal() +
+  scale_color_manual(values = c("black", "blue", "red")) +
+  geom_text_repel() +
+  geom_hline(yintercept = 1.301) +
+  geom_vline(xintercept = 1.2) +
+  geom_vline(xintercept = -0.7024698)
+  xlim(-3, 3)
+```
+
+## Differential analysis between 3MB and DMSO on background peaks
+
+In the main homer analysis, deseq was run on the consensus peaks, comparing 3MB and DMSO cell-lines. Here, we will run deseq on a random subset of non-peaks, comparing 3MB and DMSO cell-lines. This will serve as a control. To do this, we need to create background peaks comparable to the consensus differential peaks.
+
+First, we convert the consensus peaks into a bed file. We will also format the denylist file.
+
+```{r turn consensus peaks into bed file}
+peaks.consensus.boolean <- as.data.frame(read.table("Input/consensus_peaks.mRp.clN.boolean.txt", sep = "\t", header = TRUE))
+write.table(peaks.consensus.boolean[, c(1, 2, 3)],
+            "background-peaks/consensus_peaks.bed",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = FALSE,
+            sep = "\t")
+
+denylist <- as.data.frame(read.table("background-peaks/hg38-denylist.v2.bed", sep = "\t", header = FALSE))
+write.table(denylist[, c(1, 2, 3)],
+            "background-peaks/hg38-denylist.v2.bed",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = FALSE,
+            sep = "\t")
+```
+
+Next, we need to randomly select the same number and size background peaks, excluding regions that are in consensus peaks or in our denylist file. These commands should be run from the terminal. The final command can be run multiple times with varying seeds (see `background-peaks/create-background-peaks.sh`). The seeds allow for reproducibility despite random selection.
+```{sh}
+# Create exclusion file
+cat background-peaks/consensus_peaks.bed background-peaks/hg38-denylist.v2.bed > background-peaks/exclude-areas.bed
+bedtools sort -i background-peaks/exclude-areas.bed > background-peaks/exclude-areas.bed
+bedtools merge -i background-peaks/exclude-areas.bed > background-peaks/exclude-areas.bed
+
+# Randomly select background peaks based on consensus peaks
+bedtools shuffle -i background-peaks/consensus_peaks.bed -g background-peaks/hg38.chrom.sizes -excl background-peaks/exclude-areas.bed -seed 1 -noOverlapping > background-peaks/background-peaks-seed1.bed
+```
+
+Sanity check the background peaks. From this we'll throw out the background peaks with seed 9. (unclear why seed 9 failed to be shuffled properly.)
+
+```{r check background peaks}
+load_background_peaks <- function(i) {
+  var_name <- str_interp("background.peaks.seed${i}")
+  print(var_name)
+  
+  # Load the background peaks file
+  temp.peaks <- as.data.frame(read.table(str_interp("background-peaks/background-peaks-seed${i}.bed"), sep = "\t", header = FALSE))
+  colnames(temp.peaks) <- c("chr", "start", "end")
+  assign(var_name, temp.peaks, pos = 1) # pos=1 stores the variable in the environment outside of the function
+  
+  # Check that the background peaks don't overlap with the consensus peaks or denylisted areas
+  temp.peaks$overlap_denylist = nrow(
+    denylist[denylist$chr == temp.peaks$chr & !(
+    (denylist$start < temp.peaks$start & denylist$end < temp.peaks$start)
+    | (denylist$start > temp.peaks$start & denylist$end > temp.peaks$start)
+    ), ]
+  )
+  
+  temp.peaks$overlap_consensus = nrow(
+    peaks.consensus.boolean[peaks.consensus.boolean$chr == temp.peaks$chr & !(
+    (peaks.consensus.boolean$start < temp.peaks$start & peaks.consensus.boolean$end < temp.peaks$start)
+    | (peaks.consensus.boolean$start > temp.peaks$start & peaks.consensus.boolean$end > temp.peaks$start)
+    ), ]
+  )
+  
+  overlap_denylist_regions <- temp.peaks[temp.peaks$overlap_denylist > 0, ]
+  if (nrow(overlap_denylist_regions) != 0) {
+    print(str_interp("${var_name} overlaps with denylist ${nrow(overlap_denylist_regions)} times."))
+    # print(overlap_denylist_regions)
+  }
+  
+  overlap_consensus_regions <- temp.peaks[temp.peaks$overlap_consensus > 0, ]
+  if (nrow(overlap_consensus_regions) != 0) {
+    print(str_interp("${var_name} overlaps with consensus peaks ${nrow(overlap_consensus_regions)} times."))
+    # print(overlap_consensus_regions)
+  }
+  
+}
+
+invisible(lapply(1:10, load_background_peaks))
+```
+
+Now we need to quantify the number of counts per background peak for each sample. We will use Subread's feature counts. Doing this through R is painfully slow, but I was having issues getting slurm to deploy the comparable script.
+
+```{r subread featurecounts}
+subread_background_peaks <- function(i) {
+  # Load the background peaks file
+  var_name <- str_interp("background.peaks.seed${i}")
+  temp.peaks <- get(var_name)
+  
+  # Create SAF file designating the peaks as features
+  temp.saf <- temp.peaks
+  temp.saf$strand <- "+"
+  temp.saf$GeneId = str_c("Interval_", i, "_", row.names(temp.saf))
+  temp.saf <- temp.saf[, c(5, 1, 2, 3, 4)]
+  colnames(temp.saf) <- c("GeneID", "Chr", "Start", "End", "Strand")
+  write.table(temp.saf,
+      str_interp("background-peaks/${var_name}.saf"),
+      quote = FALSE,
+      row.names = FALSE,
+      col.names = TRUE,
+      sep = "\t")
+  
+  # Quantify the counts per feature
+  bam_file_paths <- colData(dds)$sample %>%
+    map_chr(\(sample_id) str_interp("Input/${sample_id}.mLb.clN.sorted.bam"))
+  temp.feature.counts <- featureCounts(files=bam_file_paths,
+                                  annot.ext=str_interp("background-peaks/${var_name}.saf"),
+                                  allowMultiOverlap=FALSE, # Should I do TRUE or False here? Probs should just match nextflow and do False even though TRUE seems recommended
+                                  isPairedEnd=TRUE)
+  assign(str_interp("background.feature.counts.seed${i}"), temp.feature.counts, pos = 1) # pos=1 stores the variable in the environment outside of the function
+  save(temp.feature.counts,
+       file = str_interp("background-peaks/background.feature.counts.seed${i}.R"))
+}
+
+invisible(lapply(c(1:8, 10), subread_background_peaks))
+```
+
+Run this if you need to reload the feature counts R objects:
+
+```{r}
+for (i in c((1:8), 10)) {
+  load( str_interp("background-peaks/background.feature.counts.seed${i}.R"))
+  assign(str_interp("background.feature.counts.seed${i}"), temp.feature.counts)
+}
+```
+
+
+Now we run DESeq on each randomly selected set of background peaks
+
+```{r deseq background peaks}
+for (i in c(1:8, 10)) {
+  temp.feature.counts <- get(str_interp("background.feature.counts.seed${i}"))
+  colnames(temp.feature.counts$counts) <- colnames(temp.feature.counts$counts) %>%
+    map_chr(\(x) str_split(x, "\\.")[[1]][[1]][[1]])
+    
+  temp.dds <- invisible(DESeqDataSetFromMatrix(countData = temp.feature.counts$counts,
+                                     colData = colData(dds),
+                                     design = ~ CellType + Replicate))
+  temp.dds <- DESeq(temp.dds)
+  assign(str_interp("background.dds.seed${i}"), temp.dds, pos = 1)
+  
+  save(temp.dds,
+       file = str_interp("background-peaks/background.dds.seed${i}.R"))
+}
+```
+
+Run this if you need to reload the dds R objects:
+
+```{r}
+for (i in c((1:8), 10)) {
+  load( str_interp("background-peaks/background.dds.seed${i}.R"))
+  assign(str_interp("background.dds.seed${i}"), temp.dds)
+}
+```
+
+Examine DESeq Results
+
+```{r examine deseq background peaks}
+for (i in c(1:8, 10)) {
+  temp.dds <- get(str_interp("background.dds.seed${i}"))
+  temp.results <- results(temp.dds, contrast = c("CellType", "DMSO", "3MB"), alpha = 0.05) # Note that this compares DMSO to 3MB; backwards from intuitive
+  assign(str_interp("results.dds.seed${i}"), temp.results, pos = 1)
+  temp.sig.results <- subset(as.data.frame(temp.results), !is.na(padj) & padj < 0.05)
+  num_sig <- nrow(temp.sig.results)
+  num_sig_up <- nrow(subset(temp.sig.results, log2FoldChange < 0))
+  num_sig_down <- nrow(subset(temp.sig.results, log2FoldChange > 0))
+  print(str_interp("Number of significant differential background peaks for seed ${i}: ${num_sig} (${num_sig_up} up in 3MB; ${num_sig_down} down in 3MB)"))
+}
+
+num_sig <- nrow(res[res$padj < 0.05, ])
+num_sig_up <- nrow(res[res$padj < 0.05 & res$log2FoldChange < 0, ])
+num_sig_down <- nrow(res[res$padj < 0.05 & res$log2FoldChange > 0, ])
+print(str_interp("For comparison, the number of significant differential consensus peaks was: ${num_sig} (${num_sig_up} up in 3MB; ${num_sig_down} down in 3MB)"))
+```
+
+## Run Homer known peak analysis on top 4000 peaks with log2FC < -1 (not just the significant ones)
+
+Take the top 4000 peaks, regardless of significance.
+
+```{r get top 4000}
+num_peaks = 4000
+
+# Differential peaks -- down in 3MB 
+write.table(head(down.in.3MB.peaks[order(down.in.3MB.peaks$log2FoldChange, decreasing = TRUE),], num_peaks),
+          str_interp("Output/differential_peaks_down_in_3MB_top${num_peaks}_any_significance.bed"),
+          quote = FALSE,
+          row.names = FALSE,
+          col.names = TRUE,
+          sep = "\t")
+
+# Differential peaks -- up in 3MB
+write.table(head(up.in.3MB.peaks[order(up.in.3MB.peaks$log2FoldChange, decreasing = TRUE),], num_peaks),
+          str_interp("Output/differential_peaks_up_in_3MB_top${num_peaks}_any_significance.bed"),
+          quote = FALSE,
+          row.names = FALSE,
+          col.names = TRUE,
+          sep = "\t")
+```
+
+This section is done in the terminal, not in R. You can use the scripts (see README.md) to do this on SLURM.
+
+ * Add Homer to path
+`export PATH="/project/LangATAC/homer/.//bin/:$PATH"`
+
+ * Run Homer using `Homer/run_homer_part2_script.sh
+
+ * View the output of Homer, specifically the known motifs, file found at: `homer-output-folder/knownResults.html`
+
+### Homer peak annotations
+
+In terminal, annotate the peak files:
+
+ * Add Homer to path
+`export PATH="/project/LangATAC/homer/.//bin/:$PATH"`
+
+ * Run Homer Annotation using `run_input_peak_annotations.sh` (note that we use a gtf file to match the annotation style used in the nextflow pipeline)
+
+### Plot Peak to Feature proportion
+
+```{r read in annotated peaks}
+annotated.peaks.threeMB.all <- as.data.frame(read.table("Output/Homer-output/Annotations/3MB_peaks.annotatePeaks.txt", sep = "\t", header = TRUE, fill=TRUE))
+
+annotated.peaks.DMSO.all <- as.data.frame(read.table("Output/Homer-output/Annotations/DMSO_peaks.annotatePeaks.txt", sep = "\t", header = TRUE, fill=TRUE))
+
+annotated.peaks.down.in.threeMB <- as.data.frame(read.table("Output/Homer-output/Annotations/differential_peaks_down_in_3MB.annotatePeaks.txt", sep = "\t", header = TRUE, fill=TRUE))
+
+annotated.peaks.up.in.threeMB <- as.data.frame(read.table("Output/Homer-output/Annotations/differential_peaks_up_in_3MB.annotatePeaks.txt", sep = "\t", header = TRUE, fill=TRUE))
+
+# Top 4000 version
+
+annotated.peaks.threeMB.top4000 <- as.data.frame(read.table("Output/Homer-output/Annotations/3MB_peaks_top4000.annotatePeaks.txt", sep = "\t", header = TRUE, fill=TRUE))
+
+annotated.peaks.DMSO.top4000 <- as.data.frame(read.table("Output/Homer-output/Annotations/DMSO_peaks_top4000.annotatePeaks.txt", sep = "\t", header = TRUE, fill=TRUE))
+
+annotated.peaks.down.in.threeMB.top4000 <- as.data.frame(read.table("Output/Homer-output/Annotations/differential_peaks_down_in_3MB_top4000.annotatePeaks.txt", sep = "\t", header = TRUE, fill=TRUE))
+
+annotated.peaks.down.in.threeMB.top4000.any.sig <- as.data.frame(read.table("Output/Homer-output/Annotations/differential_peaks_down_in_3MB_top4000_any_significance.annotatePeaks.txt", sep = "\t", header = TRUE, fill=TRUE))
+
+annotated.peaks.up.in.threeMB.top4000.any.sig <- as.data.frame(read.table("Output/Homer-output/Annotations/differential_peaks_up_in_3MB_top4000_any_significance.annotatePeaks.txt", sep = "\t", header = TRUE, fill=TRUE))
+```
+
+
+```{r plot peak to feature, message=FALSE}
+scrape_annotation_data <- function(annotated.peaks, sampleid) {
+  # Format unassigned annotations
+  unassigned <- which(is.na(as.character(annotated.peaks$Annotation)))
+  annotated.peaks$Annotation[unassigned] <- "Unassigned"
+  annotated.peaks$Annotation <- as.factor(annotated.peaks$Annotation)
+
+  # Get annotation counts
+  anno.freq <- as.character(lapply(strsplit(as.character(annotated.peaks$Annotation)," "), function(x) x[1]))
+  anno.freq <- as.data.frame(table(anno.freq))
+  num.annotations <- sum(anno.freq$Freq)
+
+  # Convert to percentage
+  anno.freq$Freq <- anno.freq$Freq * 100 / num.annotations
+  anno.freq <- anno.freq[order(anno.freq$Freq, decreasing = TRUE),]
+  colnames(anno.freq) <- c("feature",sampleid)
+  anno.melt <- melt(anno.freq)
+  return(anno.melt)
+}
+
+plot.feature.dat <- data.frame()
+# plot.feature.dat <- rbind(plot.feature.dat, scrape_annotation_data(annotated.peaks.threeMB.all, "3MB all peaks"))
+# plot.feature.dat <- rbind(plot.feature.dat, scrape_annotation_data(annotated.peaks.DMSO.all, "DMSO all peaks"))
+# plot.feature.dat <- rbind(plot.feature.dat, scrape_annotation_data(annotated.peaks.down.in.threeMB, "down in 3MB all peaks"))
+
+# These will show in reverse order
+plot.feature.dat <- rbind(plot.feature.dat, scrape_annotation_data(annotated.peaks.down.in.threeMB.top4000.any.sig, "down in 3MB top 4000 peaks by l2fc (any significance)"))
+plot.feature.dat <- rbind(plot.feature.dat, scrape_annotation_data(annotated.peaks.down.in.threeMB.top4000, "down in 3MB top 4000 peaks by l2fc (padj < 0.05)"))
+plot.feature.dat <- rbind(plot.feature.dat, scrape_annotation_data(annotated.peaks.up.in.threeMB.top4000.any.sig, "up in 3MB top 4000 peaks by l2fc (any significance)"))
+plot.feature.dat <- rbind(plot.feature.dat, scrape_annotation_data(annotated.peaks.up.in.threeMB, "up in 3MB peaks (all peaks; <4000 total) (padj < 0.05)"))
+plot.feature.dat <- rbind(plot.feature.dat, scrape_annotation_data(annotated.peaks.threeMB.top4000, "3MB top 4000 peaks by l2fc"))
+plot.feature.dat <- rbind(plot.feature.dat, scrape_annotation_data(annotated.peaks.DMSO.top4000, "DMSO top 4000 peaks by l2fc"))
+
+# Replace non-standard features with "Other"
+other <- which(!(plot.feature.dat$feature %in% list("Intergenic", "TTS", "Unassigned", "exon", "intron", "promoter-TSS")))
+levels(plot.feature.dat$feature) <- c(levels(plot.feature.dat$feature), "Other")
+plot.feature.dat$feature[other] <- as.factor("Other")
+
+# Plot 
+ggplot(plot.feature.dat, aes(fill=feature, y=value, x=variable)) +
+  geom_bar(position="stack", stat="identity") + 
+  xlab("") +
+  ylab("% Feature") +
+  ggtitle("Homer peak annotation") +
+  scale_fill_manual(values=c(wes_palette(n=5, name="Cavalcanti1"), "Blue", "LightBlue")) +
+  coord_flip()
+```
+
+## Log2FoldChange of peaks
+
+Here, we compute the median log2FoldChange of the differential peaks.
+```{r log2foldchange differential}
+differential_median_log2FoldChange <- -1 * median(down.in.3MB.peaks.sig$log2FoldChange)
+print(differential_median_log2FoldChange)
+```
+
+Here, we compute the median log2FoldChange of the background peaks (should really be called background regions) for each of the 9 trials, computing the averages and standard deviations.
+```{r log2foldchange background}
+background_trials <- data.frame(median = c())
+for (i in c(1:8, 10)) {
+  temp.results <- get(str_interp("results.dds.seed${i}"))
+  median <- -1 * median(temp.results$log2FoldChange, na.rm = TRUE)
+  background_trials[i, "median"] <- median
+}
+
+average_background_log2FoldChange <- mean(background_trials$median, na.rm = TRUE)
+sd <- sd(background_trials$median, na.rm = TRUE)
+print(str_interp("For the background regions, the average median log2FoldChange value was ${average} with standard deviation ${sd}."))
+```
+
+Here, we check what the log2FoldChange is where we have chosen to cutoff the peaks prior to sending to Homer. This is the log2foldchange of the 4000th significant peak
+```{r log2FoldChange cutoff}
+down_cutoff <- -1 * down.in.3MB.peaks.sig[order(down.in.3MB.peaks.sig$log2FoldChange, decreasing = TRUE), ][4000, "log2FoldChange"]
+print(str_interp("The Log2FoldChange cutoff for the peaks down in 3MB was ${down_cutoff}. There was no log2FoldChange cutoff for the peaks up in 3MB because there were not 4000 peaks."))
+```
+
+This is the same volcano plot as above but it includes the lines representing the log2foldChange cutoff as well as the median log2FoldChange values of the regions calculated above. It's a volcano plot of the deseq results after filtering the results such that the consensus peaks considered are only those with at least one of the individual peaks contributing to a given consensus peak having a -log10qval > 4.
+
+```{r volcano plot additional}
+as.data.frame(res) %>%
+  # -log2FoldChange because the results were compared backwards from the intuitive direction
+  ggplot(aes(x = -log2FoldChange, y = -log10(padj), label = rownames(as.data.frame(res)))) +
+  geom_hex(bins = 75, aes(fill = stat(log(count)))) +
+  theme_minimal() +
+  scale_color_manual(values = c("black", "blue", "red")) +
+  geom_text_repel() +
+  geom_hline(yintercept = 1.301) +
+  geom_vline(xintercept = 0) +
+  geom_vline(xintercept = down_cutoff) +
+  geom_vline(xintercept = average_background_log2FoldChange) +
+  geom_vline(xintercept = differential_median_log2FoldChange) +
+  xlim(-3, 3)
+```
+
+.

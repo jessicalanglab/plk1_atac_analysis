@@ -1,0 +1,318 @@
+---
+title: "Secondary analysis of atac-seq data"
+output: html_notebook
+---
+
+## Introduction  
+
+Goal: Identify known transcription factors with differential expression in 3MB and DMSO cell lines.
+
+Atac-seq was run for 4 biological replicates and 2 technical replicates across the 3MB and DMSO cell lines. 
+
+Sample preparation and Atac-seq was performed by Kristin in the Lang lab.
+Analysis is performed by Ryan in the Lang lab.
+
+Biological Questions:
+
+ * What motifs are available for binding in the 3MB cell line? What transcription factors are associated with these motifs?
+ * What motifs are available for binding in the DMSO cell line? What transcription factors are associated with these motifs?
+ * What motifs are differentially available between the 3MB and DMSO cell lines? What transcription facotrs are associated with these motifs?
+
+## Inputs
+
+Inputs consisted of:  
+
+ * Macs2 peaks output from atac-seq (formatted into a .bed file)
+    * Copy over peaks files, rename as `.bed` files, and delete top comment section so it's in `.bed` format. Files are at `[PipelineOutputFolder]/bwa/merged_replicate/macs2/broad_peak/3MB.mRp.clN_peaks.xls`
+    * Copy over `consensus_peaks.boolean.txt` file. Found at `[PipelineOutputFolder]/bwa/merged_replicate/macs2/broad_peak/consensus/consensus_peaks.mRp.clN.boolean.txt`
+    * DeSeq pipeline output. Files found at `[PipelineOutputFolder]/bwa/merged_replicate/macs2/broad_peak/consensus/deseq2/consensus_peaks.mRp.clN.dds.RData`
+ * Masked hg38 genome: `wget --timestamping 'ftp://hgdownload.cse.ucsc.edu/goldenPath/hg38/bigZips/fa.masked.gz' -O hg38.fa.masked.gz`
+ * Installation of homer. Followed [these instructions](http://homer.ucsd.edu/homer/introduction/install.html)
+ 
+
+```{r load packages, include=FALSE}
+library(tidyverse)
+library(stringr)
+library(ggrepel)
+library(ggplot2)
+library(scales)
+library(MatrixGenerics)
+library(reshape2)
+library(wesanderson)
+library(SummarizedExperiment)
+library(DESeqAnalysis)
+```
+
+### Load peaks data
+
+Loads the peaks data from the `atac-seq` output. For the consensus peaks, we compute the maximum q value (considering the q value for the related 3MB peak and the DMSO peak).
+
+```{r load peaks data}
+peaks.threeMB.all <- as.data.frame(read.table("Input/3MB.mRp.clN_peaks.bed", sep = "\t", header = TRUE))
+peaks.dmso.all <- as.data.frame(read.table("Input/DMSO.mRp.clN_peaks.bed", sep = "\t", header = TRUE))
+peaks.consensus.boolean <- as.data.frame(read.table("Input/consensus_peaks.mRp.clN.boolean.txt", sep = "\t", header = TRUE))
+
+# Compute the maximum q val
+peaks.consensus.boolean$max_qvalue <- pmax(as.numeric(peaks.consensus.boolean$X3MB.mRp.clN.qval),
+                                           as.numeric(peaks.consensus.boolean$DMSO.mRp.clN.qval),
+                                           na.rm = TRUE)
+peaks.consensus.boolean$max_qvalue <- as.numeric(peaks.consensus.boolean$max_qvalue)
+
+peaks.consensus.boolean
+```
+
+## Differential peak calling
+
+Uses a P-Wald test to determine the difference in openness of chromatin across relevant intervals, comparing between cell types (DMSO and 3MB).
+
+The intervals from the consensus_peaks file from the `atac-seq` output are labeled with generic ID. The mapping to the chromosomal position can be found in the consensus_peaks boolean text file.
+
+```{r run deseq}
+load("Input/consensus_peaks.mRp.clN.dds.RData")
+colData(dds)$CellType <- as.factor(colData(dds)$Group1)
+colData(dds)$Replicate <- as.factor(colData(dds)$Group2)
+design(dds) <- ~ CellType + Replicate
+dds.unfiltered <- dds
+dds.unfiltered <- DESeq(dds.unfiltered)
+```
+
+
+```{r differential peak calling}
+intervals.filtered <- subset(peaks.consensus.boolean, max_qvalue > 4 ) 
+dds <- subset(dds.unfiltered, rownames(dds.unfiltered) %in% intervals.filtered$interval_id) 
+res <- results(dds, contrast = c("CellType", "DMSO", "3MB"), alpha = 0.05)
+as.data.frame(res)
+```
+
+Separate the intervals that are up in DMSO (i.e. down in 3MB) from those that are down in DMSO (i.e. up in 3MB). Also, filter out insignificant peaks.
+
+```{r }
+res <- as.data.frame(res)
+
+annotated.intervals <- data.frame(row.names = rownames(res),
+                                  chr = peaks.consensus.boolean$chr[match(rownames(res), peaks.consensus.boolean$interval_id)],
+                                  start = peaks.consensus.boolean$start[match(rownames(res), peaks.consensus.boolean$interval_id)],
+                                  end = peaks.consensus.boolean$end[match(rownames(res), peaks.consensus.boolean$interval_id)],
+                                  interval_id = rownames(res),
+                                  padj = res$padj,
+                                  log2FoldChange = res$log2FoldChange)
+
+# All peaks, significant or not
+down.in.3MB.peaks <- annotated.intervals %>% # down in 3MB; up in DMSO
+  filter(log2FoldChange >= 0)
+
+
+up.in.3MB.peaks <- annotated.intervals %>% # up in 3MB; down in DMSO
+  filter(log2FoldChange <= 0)
+
+# Only significant peaks
+down.in.3MB.peaks.sig <- annotated.intervals %>% # down in 3MB
+  filter(padj < 0.05) %>%
+  filter(log2FoldChange >= 0)
+
+
+up.in.3MB.peaks.sig <- annotated.intervals %>% # up in 3MB
+  filter(padj < 0.05) %>%
+  filter(log2FoldChange <= 0)
+
+down.in.3MB.peaks.sig
+up.in.3MB.peaks.sig
+
+write.table(down.in.3MB.peaks.sig,
+            "Output/differential_peaks_down_in_3MB.bed",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = TRUE,
+            sep = "\t")
+
+write.table(up.in.3MB.peaks.sig,
+            "Output/differential_peaks_up_in_3MB.bed",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = TRUE,
+            sep = "\t")
+```
+
+## Subset peaks
+
+To run Homer, we need to select a subset of the peaks found for each of the categories (DMSO peaks, 3MB peaks, and differential peaks).
+
+To determine the cutoffs, we examined the raw peaks data. See the separate file `determining-cutoffs.Rmd`. We found that the known motifs (the output of homer) follow a pattern when we consider ~500 to ~4000 peaks. By ~8000 peaks, the known motifs begin to be dominated by background noise. Thus, we will subset the most highly enriched 4000 peaks (out of the peaks with q value < 0.05).
+
+```{r subset peaks 4000}
+num_peaks = 4000
+
+# Differential peaks -- down in 3MB (don't need to subset down in DMSO because there are not enough peaks)
+write.table(head(down.in.3MB.peaks.sig[order(down.in.3MB.peaks.sig$log2FoldChange, decreasing = TRUE),], num_peaks),
+          str_interp("Output/differential_peaks_down_in_3MB_top${num_peaks}.bed"),
+          quote = FALSE,
+          row.names = FALSE,
+          col.names = TRUE,
+          sep = "\t")
+
+# 3MB peaks
+write.table(head(peaks.threeMB.all[order(peaks.threeMB.all$fold_enrichment, decreasing = TRUE),], num_peaks),
+          str_interp("Output/3MB.mRp.clN_peaks_top${num_peaks}.bed"),
+          quote = FALSE,
+          row.names = FALSE,
+          col.names = TRUE,
+          sep = "\t")
+
+# DMSO peaks
+write.table(head(peaks.dmso.all[order(peaks.dmso.all$fold_enrichment, decreasing = TRUE),], num_peaks),
+          str_interp("Output/DMSO.mRp.clN_peaks_top${num_peaks}.bed"),
+          quote = FALSE,
+          row.names = FALSE,
+          col.names = TRUE,
+          sep = "\t")
+```
+
+## Output file formats
+
+Write the peak files to an IGV folder without the row names (for ease of opening in IGV)
+```{r write IGV files}
+# Input peaks
+write.table(peaks.threeMB.all, # 3MB
+          "IGV/3MB.mRp.clN_peaks.bed",
+          quote = FALSE,
+          row.names = FALSE,
+          col.names = FALSE,
+          sep = "\t")
+write.table(peaks.dmso.all, # DMSO
+          "IGV/DMSO.mRp.clN_peaks.bed",
+          quote = FALSE,
+          row.names = FALSE,
+          col.names = FALSE,
+          sep = "\t")
+
+# Output peaks
+write.table(down.in.3MB.peaks.sig, # differential, down in 3MB
+          "IGV/differential_peaks_down_in_3MB.bed",
+          quote = FALSE,
+          row.names = FALSE,
+          col.names = FALSE,
+          sep = "\t")
+
+write.table(up.in.3MB.peaks.sig, # differential, up in 3MB
+            "IGV/differential_peaks_up_in_3MB.bed",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = FALSE,
+            sep = "\t")
+
+num_peaks = 4000
+
+
+write.table( # differential, down in 3MB top 4000
+          head(down.in.3MB.peaks.sig[order(down.in.3MB.peaks.sig$log2FoldChange, decreasing = TRUE),], num_peaks),
+          str_interp("IGV/differential_peaks_down_in_3MB_top${num_peaks}.bed"),
+          quote = FALSE,
+          row.names = FALSE,
+          col.names = FALSE,
+          sep = "\t")
+
+write.table( # 3MB peaks top 4000
+          head(peaks.threeMB.all[order(peaks.threeMB.all$fold_enrichment, decreasing = TRUE),], num_peaks),
+          str_interp("IGV/3MB.mRp.clN_peaks_top${num_peaks}.bed"),
+          quote = FALSE,
+          row.names = FALSE,
+          col.names = FALSE,
+          sep = "\t")
+
+write.table( # DMSO peaks top 4000
+          head(peaks.dmso.all[order(peaks.dmso.all$fold_enrichment, decreasing = TRUE),], num_peaks),
+          str_interp("IGV/DMSO.mRp.clN_peaks_top${num_peaks}.bed"),
+          quote = FALSE,
+          row.names = FALSE,
+          col.names = FALSE,
+          sep = "\t")
+
+```
+
+## Running Homer
+
+This section is done in the terminal, not in R. You can use the scripts (see README.md) to do this on SLURM.
+
+ * Add Homer to path (TODO: figure out why adding it to the bashrc isn't working)
+`export PATH="/project/LangATAC/homer/.//bin/:$PATH"`
+
+ * Run Homer (Can be run in parallel on SLURM -- see bash files in `Homer/`)
+example: `findMotifsGenome.pl 3MB.mRp.clN_peaks_top4000.bed hg38 3MB.mRp.clN_homer/ -size 200 -mask`
+
+ * View the output of Homer, specifically the known motifs, file found at: `homer-output-folder/knownResults.html`
+
+ * Validate results (see judge quality section of [these Homer tips](http://homer.ucsd.edu/homer/introduction/practicalTips.html))
+ 
+## Homer peak annotations
+
+In terminal, annotate the peak files:
+
+ * Add Homer to path (TODO: figure out why adding it to the bashrc isn't working)
+`export PATH="/project/LangATAC/homer/.//bin/:$PATH"`
+
+ * Run Homer Annotation using `run_input_peak_annotations.sh` (note that we use a gtf file to match the annotation style used in the nextflow pipeline)
+
+## Plot Peak to Feature proportion
+
+```{r read in annotated peaks}
+annotated.peaks.threeMB.all <- as.data.frame(read.table("Output/Homer-output/Annotations/3MB_peaks.annotatePeaks.txt", sep = "\t", header = TRUE, fill=TRUE))
+
+annotated.peaks.DMSO.all <- as.data.frame(read.table("Output/Homer-output/Annotations/DMSO_peaks.annotatePeaks.txt", sep = "\t", header = TRUE, fill=TRUE))
+
+annotated.peaks.down.in.threeMB <- as.data.frame(read.table("Output/Homer-output/Annotations/differential_peaks_down_in_3MB.annotatePeaks.txt", sep = "\t", header = TRUE, fill=TRUE))
+
+annotated.peaks.up.in.threeMB <- as.data.frame(read.table("Output/Homer-output/Annotations/differential_peaks_up_in_3MB.annotatePeaks.txt", sep = "\t", header = TRUE, fill=TRUE))
+
+# Top 4000 version
+
+annotated.peaks.threeMB.top4000 <- as.data.frame(read.table("Output/Homer-output/Annotations/3MB_peaks_top4000.annotatePeaks.txt", sep = "\t", header = TRUE, fill=TRUE))
+
+annotated.peaks.DMSO.top4000 <- as.data.frame(read.table("Output/Homer-output/Annotations/DMSO_peaks_top4000.annotatePeaks.txt", sep = "\t", header = TRUE, fill=TRUE))
+
+annotated.peaks.down.in.threeMB.top4000 <- as.data.frame(read.table("Output/Homer-output/Annotations/differential_peaks_down_in_3MB_top4000.annotatePeaks.txt", sep = "\t", header = TRUE, fill=TRUE))
+```
+
+
+```{r plot peak to feature}
+scrape_annotation_data <- function(annotated.peaks, sampleid) {
+  # Format unassigned annotations
+  unassigned <- which(is.na(as.character(annotated.peaks$Annotation)))
+  annotated.peaks$Annotation[unassigned] <- "Unassigned"
+  annotated.peaks$Annotation <- as.factor(annotated.peaks$Annotation)
+
+  # Get annotation counts
+  anno.freq <- as.character(lapply(strsplit(as.character(annotated.peaks$Annotation)," "), function(x) x[1]))
+  anno.freq <- as.data.frame(table(anno.freq))
+  num.annotations <- sum(anno.freq$Freq)
+
+  # Convert to percentage
+  anno.freq$Freq <- anno.freq$Freq * 100 / num.annotations
+  anno.freq <- anno.freq[order(anno.freq$Freq, decreasing = TRUE),]
+  colnames(anno.freq) <- c("feature",sampleid)
+  anno.melt <- melt(anno.freq)
+  return(anno.melt)
+}
+
+plot.feature.dat <- data.frame()
+plot.feature.dat <- rbind(plot.feature.dat, scrape_annotation_data(annotated.peaks.threeMB.all, "3MB all peaks"))
+plot.feature.dat <- rbind(plot.feature.dat, scrape_annotation_data(annotated.peaks.DMSO.all, "DMSO all peaks"))
+plot.feature.dat <- rbind(plot.feature.dat, scrape_annotation_data(annotated.peaks.threeMB.top4000, "3MB top 4000 peaks"))
+plot.feature.dat <- rbind(plot.feature.dat, scrape_annotation_data(annotated.peaks.DMSO.top4000, "DMSO top 4000 peaks"))
+plot.feature.dat <- rbind(plot.feature.dat, scrape_annotation_data(annotated.peaks.up.in.threeMB, "up in 3MB all peaks (<4000)"))
+plot.feature.dat <- rbind(plot.feature.dat, scrape_annotation_data(annotated.peaks.down.in.threeMB, "down in 3MB all peaks"))
+plot.feature.dat <- rbind(plot.feature.dat, scrape_annotation_data(annotated.peaks.down.in.threeMB.top4000, "down in 3MB top 4000 peaks"))
+
+# Replace non-standard features with "Other"
+other <- which(!(plot.feature.dat$feature %in% list("Intergenic", "TTS", "Unassigned", "exon", "intron", "promoter-TSS")))
+levels(plot.feature.dat$feature) <- c(levels(plot.feature.dat$feature), "Other")
+plot.feature.dat$feature[other] <- as.factor("Other")
+
+# Plot 
+ggplot(plot.feature.dat, aes(fill=feature, y=value, x=variable)) +
+  geom_bar(position="stack", stat="identity") + 
+  xlab("") +
+  ylab("% Feature") +
+  ggtitle("Homer peak annotation") +
+  scale_fill_manual(values=c(wes_palette(n=5, name="Cavalcanti1"), "Blue", "LightBlue")) +
+  coord_flip()
+```

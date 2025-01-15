@@ -40,7 +40,8 @@ library(MatrixGenerics)
 library(reshape2)
 library(wesanderson)
 library(SummarizedExperiment)
-library(DESeqAnalysis)
+library(DESeq2)
+library(DESeqAnalysis) # install.packages("remotes") # remotes::install_github("acidgenomics/DESeqAnalysis")
 ```
 
 ### Load peaks data
@@ -78,9 +79,29 @@ dds.unfiltered <- DESeq(dds.unfiltered)
 
 
 ```{r differential peak calling}
+# Save unfiltered differential results
 intervals.filtered <- subset(peaks.consensus.boolean, max_qvalue > 4 ) 
-dds <- subset(dds.unfiltered, rownames(dds.unfiltered) %in% intervals.filtered$interval_id) 
+res.unfiltered <- results(dds.unfiltered, contrast = c("CellType", "DMSO", "3MB"), alpha = 0.05)
+# Swap directions so that DMSO is the baseline
+res.unfiltered$log2FoldChange = -1 * res.unfiltered$log2FoldChange
+write.table(res.unfiltered,
+            "Output/differential_results_unfiltered.tsv",
+            quote = FALSE,
+            row.names = TRUE,
+            col.names = TRUE,
+            sep = "\t")
+
+# Save filtered differential results
+dds <- subset(dds.unfiltered, rownames(dds.unfiltered) %in% intervals.filtered$interval_id)
 res <- results(dds, contrast = c("CellType", "DMSO", "3MB"), alpha = 0.05)
+# Swap directions so that DMSO is the baseline
+res$log2FoldChange = -1 * res$log2FoldChange
+write.table(res,
+            "Output/differential_results_filtered.tsv",
+            quote = FALSE,
+            row.names = TRUE,
+            col.names = TRUE,
+            sep = "\t")
 as.data.frame(res)
 ```
 
@@ -114,6 +135,33 @@ down.in.3MB.peaks.sig <- annotated.intervals %>% # down in 3MB
 up.in.3MB.peaks.sig <- annotated.intervals %>% # up in 3MB
   filter(padj < 0.05) %>%
   filter(log2FoldChange <= 0)
+
+# Swap directions so that DMSO is the baseline
+down.in.3MB.peaks.sig$log2FoldChange = -1 * down.in.3MB.peaks.sig$log2FoldChange
+up.in.3MB.peaks.sig$log2FoldChange = -1 * up.in.3MB.peaks.sig$log2FoldChange
+
+down.in.3MB.peaks.sig
+up.in.3MB.peaks.sig
+
+write.table(down.in.3MB.peaks.sig,
+            "Output/differential_peaks_down_in_3MB.bed",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = TRUE,
+            sep = "\t")
+
+write.table(up.in.3MB.peaks.sig,
+            "Output/differential_peaks_up_in_3MB.bed",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = TRUE,
+            sep = "\t")
+```
+
+```{r}
+# Swap directions so that DMSO is the baseline
+down.in.3MB.peaks.sig$log2FoldChange = -1 * down.in.3MB.peaks.sig$log2FoldChange
+up.in.3MB.peaks.sig$log2FoldChange = -1 * up.in.3MB.peaks.sig$log2FoldChange
 
 down.in.3MB.peaks.sig
 up.in.3MB.peaks.sig

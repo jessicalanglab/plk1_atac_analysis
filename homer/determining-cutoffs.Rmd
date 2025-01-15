@@ -7,7 +7,7 @@ output: html_notebook
 
 Goal: Identify a good cutoff for the significant peaks to include in the homer analysis.
 
-Atac-seq was run for 4 biological replicates and 2 technical replicates across the 3MB and DMSO cell lines. 
+Atac-seq was run for 4 biological replicates and 2 technical replicates across the 3MB and DMSO cell lines.
 
 Sample preparation and Atac-seq was performed by Kristin in the Lang lab.
 Analysis is performed by Ryan in the Lang lab.

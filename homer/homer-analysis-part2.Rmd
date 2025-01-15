@@ -43,32 +43,34 @@ library(hexbin)
 This is a volcano plot of the deseq results prior to filtering the results to consider only those peaks with at least one of the individual peaks contributing to a given consensus peak having a -log10qval > 4.
 
 ```{r volcano plot before filtering}
+res.unfiltered <- read.table("Output/differential_results_unfiltered.tsv", header = TRUE, row.names = 1, sep = "\t", stringsAsFactors = FALSE)
+
 res.unfiltered %>%
-  # -log2FoldChange because the results were compared backwards from the intuitive direction
-  ggplot(aes(x = -log2FoldChange, y = -log10(padj), label = rownames(as.data.frame(res.unfiltered)))) +
+  ggplot(aes(x = log2FoldChange, y = -log10(padj), label = rownames(as.data.frame(res.unfiltered)))) +
+  geom_hline(yintercept = 0) +
+  geom_vline(xintercept = 0) +
   geom_hex(bins = 75, aes(fill = stat(log(count)))) +
   theme_minimal() +
   scale_color_manual(values = c("black", "blue", "red")) +
   geom_text_repel() +
-  geom_hline(yintercept = 1.301) +
-  geom_vline(xintercept = 1.2) +
-  geom_vline(xintercept = -1.2) +
+  geom_hline(yintercept = 1.301, color="red") +
   xlim(-3, 3)
 ```
 
 This is a volcano plot of the deseq results after filtering the results such that the consensus peaks considered are only those with at least one of the individual peaks contributing to a given consensus peak having a -log10qval > 4.
 
 ```{r volcano plot}
-as.data.frame(res) %>%
-  # -log2FoldChange because the results were compared backwards from the intuitive direction
-  ggplot(aes(x = -log2FoldChange, y = -log10(padj), label = rownames(as.data.frame(res)))) +
+res.filtered <- read.table("Output/differential_results_filtered.tsv", header = TRUE, row.names = 1, sep = "\t", stringsAsFactors = FALSE)
+
+as.data.frame(res.filtered) %>%
+  ggplot(aes(x = log2FoldChange, y = -log10(padj), label = rownames(as.data.frame(res.filtered)))) +
+  geom_hline(yintercept = 0) +
+  geom_vline(xintercept = 0) +
   geom_hex(bins = 75, aes(fill = stat(log(count)))) +
   theme_minimal() +
   scale_color_manual(values = c("black", "blue", "red")) +
   geom_text_repel() +
-  geom_hline(yintercept = 1.301) +
-  geom_vline(xintercept = 1.2) +
-  geom_vline(xintercept = -0.7024698)
+  geom_hline(yintercept = 1.301, color="red") +
   xlim(-3, 3)
 ```
 

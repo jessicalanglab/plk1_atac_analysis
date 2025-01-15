@@ -17,7 +17,7 @@ Biological Questions:
  
 ## Description of files
 
-** The bulk of the valuable information is in `homer/homer-analysis.nb.html` and `homer/Output/Homer-output` **
+**The bulk of the valuable information is in `homer/homer-analysis.nb.html` and `homer/Output/Homer-output`**
 
 * `homer/homer-analysis.Rmd` and `homer/homer-analysis.nb.html` - R notebook containing the data processing and descriptions of each step, including instructions to run Homer. Also includes a plot of the annotated peaks using Homer.
 * `homer/Homer/` scripts to run Homer analysis on SLURM
@@ -29,3 +29,4 @@ Biological Questions:
 * `homer/Determining-cutoffs-output/Homer-output` results from Homer analysis run on a variety of cutoffs
 
 * `geo_upload` contains a script used to create the metadata for the GEO upload
+* `deeptoolsProfile` contains scripts to create profile plots for the ATAC signal over various collections of regions
